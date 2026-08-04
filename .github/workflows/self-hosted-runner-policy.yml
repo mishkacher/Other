@@ -1,136 +1,27 @@
-name: Self-hosted runner label policy
+name: Self-hosted runner selector policy
 
 on:
   pull_request:
     paths:
-      - ".github/workflows/**"
-      - ".github/RUNNER_LABELS.md"
+      - '.github/workflows/**'
+      - '.github/scripts/check_runner_selectors.py'
+      - '.github/RUNNER_LABELS.md'
   push:
-    branches: [main, master]
     paths:
-      - ".github/workflows/**"
-      - ".github/RUNNER_LABELS.md"
+      - '.github/workflows/**'
+      - '.github/scripts/check_runner_selectors.py'
+      - '.github/RUNNER_LABELS.md'
   workflow_dispatch:
 
 permissions:
   contents: read
 
-concurrency:
-  group: self-hosted-runner-policy-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
-  validate-runner-labels:
+  enforce:
     runs-on: [self-hosted, fast]
-    timeout-minutes: 10
+    timeout-minutes: 5
     steps:
-      - name: Check out repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@v4
         with:
           persist-credentials: false
-
-      - name: Validate self-hosted selectors
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          from __future__ import annotations
-
-          import re
-          import sys
-          from pathlib import Path
-
-          WORKFLOW_ROOT = Path(".github/workflows")
-          WORKFLOW_PATTERNS = ("*.yml", "*.yaml")
-          REQUIRED_CAPABILITIES = {"fast", "docker", "backtester", "macOS"}
-          LEGACY_LABELS = {"backtest"}
-          RUNS_ON = re.compile(r"^(?P<indent>\s*)runs-on:\s*(?P<value>.*?)\s*(?:#.*)?$")
-          LIST_ITEM = re.compile(r"^\s*-\s*['\"]?(?P<label>[A-Za-z0-9_.-]+)['\"]?\s*(?:#.*)?$")
-
-          def labels_from_inline(value: str) -> list[str]:
-              value = value.strip()
-              if not value:
-                  return []
-              if value.startswith("[") and value.endswith("]"):
-                  return [
-                      item.strip().strip("'\"")
-                      for item in value[1:-1].split(",")
-                      if item.strip()
-                  ]
-              if "${{" in value:
-                  return []
-              return [value.strip("'\"")]
-
-          def selectors(text: str) -> list[tuple[int, list[str], str]]:
-              lines = text.splitlines()
-              result: list[tuple[int, list[str], str]] = []
-              index = 0
-              while index < len(lines):
-                  match = RUNS_ON.match(lines[index])
-                  if match is None:
-                      index += 1
-                      continue
-                  lineno = index + 1
-                  base_indent = len(match.group("indent"))
-                  value = match.group("value")
-                  labels = labels_from_inline(value)
-                  raw = value
-                  if not value:
-                      continuation: list[str] = []
-                      cursor = index + 1
-                      while cursor < len(lines):
-                          line = lines[cursor]
-                          if line.strip() and len(line) - len(line.lstrip(" ")) <= base_indent:
-                              break
-                          item = LIST_ITEM.match(line)
-                          if item:
-                              labels.append(item.group("label"))
-                              continuation.append(line.strip())
-                          cursor += 1
-                      raw = " ".join(continuation)
-                      index = cursor
-                  else:
-                      index += 1
-                  result.append((lineno, labels, raw))
-              return result
-
-          errors: list[str] = []
-          files = sorted(
-              {
-                  path
-                  for pattern in WORKFLOW_PATTERNS
-                  for path in WORKFLOW_ROOT.glob(pattern)
-                  if path.is_file()
-              }
-          )
-          if not files:
-              errors.append("no workflow files found")
-
-          for path in files:
-              try:
-                  text = path.read_text(encoding="utf-8")
-              except (OSError, UnicodeError) as exc:
-                  errors.append(f"{path}: cannot read workflow: {exc}")
-                  continue
-
-              for lineno, labels, raw in selectors(text):
-                  label_set = set(labels)
-                  if label_set & LEGACY_LABELS:
-                      errors.append(
-                          f"{path}:{lineno}: legacy label 'backtest' is forbidden; use 'backtester'"
-                      )
-                  if "self-hosted" not in label_set:
-                      continue
-                  if not (label_set & REQUIRED_CAPABILITIES):
-                      errors.append(
-                          f"{path}:{lineno}: self-hosted selector {raw!r} needs a capability "
-                          "label: fast, docker, backtester, or macOS"
-                      )
-
-          if errors:
-              print("Self-hosted runner label policy violations:", file=sys.stderr)
-              for error in errors:
-                  print(f"- {error}", file=sys.stderr)
-              raise SystemExit(1)
-
-          print(f"Self-hosted runner label policy passed for {len(files)} workflow file(s).")
-          PY
+      - run: python3 .github/scripts/check_runner_selectors.py
